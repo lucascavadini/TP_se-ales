@@ -1,0 +1,366 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+```
+
+#Importo todos los datos
+
+```{r}
+carpetasteps <- "C:/Users/feed/Downloads/sleep-accel-1.0.0/motion-and-heart-rate-from-a-wrist-worn-wearable-and-labeled-sleep-from-polysomnography-1.0.0/steps"
+```
+
+```{r}
+
+archivos <- list.files(
+  carpetasteps,
+  pattern = "\\.txt$",
+  full.names = TRUE
+)
+
+steps <- archivos %>%
+  lapply(function(archivo) {
+
+    df <- read_csv(
+      archivo,
+      col_names = FALSE,
+      show_col_types = FALSE
+    )
+
+    df$nombre_archivo <- basename(archivo)
+
+    df
+  }) %>%
+  bind_rows()
+```
+
+
+```{r}
+library(data.table)
+
+carpetam <- "C:/Users/feed/Downloads/sleep-accel-1.0.0/motion-and-heart-rate-from-a-wrist-worn-wearable-and-labeled-sleep-from-polysomnography-1.0.0/motion"
+
+archivosm <- list.files(
+  carpetam,
+  pattern = "\\.txt$",
+  full.names = TRUE
+)
+
+motion <- rbindlist(
+  lapply(archivosm, function(archivo) {
+
+    df <- fread(
+      archivo,
+      header = FALSE,
+      sep = " "
+    )
+
+    df[, nombre_archivo := basename(archivo)]
+
+    df
+  })
+)
+```
+
+```{r}
+
+carpetal <- "C:/Users/feed/Downloads/sleep-accel-1.0.0/motion-and-heart-rate-from-a-wrist-worn-wearable-and-labeled-sleep-from-polysomnography-1.0.0/labels"
+
+archivosl <- list.files(
+  carpetal,
+  pattern = "\\.txt$",
+  full.names = TRUE
+)
+
+labels <- archivosl %>%
+  lapply(function(archivo) {
+
+    df <- fread(
+      archivo,
+      header = FALSE,
+      sep = " "
+    )
+
+    df$nombre_archivo <- basename(archivo)
+
+    df
+  }) %>%
+  bind_rows()
+```
+
+```{r}
+
+carpetah <- "C:/Users/feed/Downloads/sleep-accel-1.0.0/motion-and-heart-rate-from-a-wrist-worn-wearable-and-labeled-sleep-from-polysomnography-1.0.0/heart_rate"
+
+archivosh <- list.files(
+  carpetah,
+  pattern = "\\.txt$",
+  full.names = TRUE
+)
+
+heart_rate <- archivosh %>%
+  lapply(function(archivo) {
+
+    df <- read_csv(
+      archivo,
+      col_names = FALSE,
+      show_col_types = FALSE
+    )
+
+    df$nombre_archivo <- basename(archivo)
+
+    df
+  }) %>%
+  bind_rows()
+```
+
+
+#Corrijo nombrearchivo para quedarme solo con el identificador de cada paciente
+```{r}
+heart_rate$nombre_archivo = gsub("_heartrate.txt", "", heart_rate$nombre_archivo)
+```
+
+```{r}
+labels$nombre_archivo = gsub("_labeled_sleep.txt", "", labels$nombre_archivo)
+```
+
+```{r}
+motion$nombre_archivo = gsub("_acceleration.txt", "", motion$nombre_archivo)
+```
+
+```{r}
+steps$nombre_archivo = gsub("_steps.txt", "", steps$nombre_archivo)
+```
+
+
+```{r}
+setnames(heart_rate, c("date", "heart_rate", "id"))
+setnames(labels, c("date", "stage", "id"))
+setnames(motion, c("date", "x_acc", "y_acc", "z_acc", "id"))
+setnames(steps, c("date", "steps", "id"))
+```
+
+```{r}
+library(dplyr)
+```
+
+```{r}
+motion_30s <- motion[
+  ,
+  {
+    modulo <- sqrt(
+      x_acc^2 +
+      y_acc^2 +
+      z_acc^2
+    )
+
+    .(
+      movimiento_promedio = mean(modulo, na.rm = TRUE),
+      movimiento_sd = sd(modulo, na.rm = TRUE)
+    )
+  },
+  by = .(
+    id,
+    date_30 = floor(date / 30) * 30
+  )
+]
+```
+En motion_30s, los registros que son mayores a por ej 1.10 o que tienen alto desvio indica que hay mucho movimiento. Registros con el movimiento promedio en 1 y bajo sd indica resposo del reloj.
+
+```{r}
+library(data.table)
+
+setDT(heart_rate)
+```
+
+
+```{r}
+heart_rate_30s <- heart_rate[
+  ,
+  .(
+    hr_promedio = mean(heart_rate, na.rm = TRUE),
+    hr_sd = sd(heart_rate, na.rm = TRUE),
+    hr_min = min(heart_rate, na.rm = TRUE),
+    hr_max = max(heart_rate, na.rm = TRUE),
+    hr_cantidad = .N
+  ),
+  by = .(
+    id,
+    date_30 = floor(date / 30) * 30
+  )
+]
+```
+
+```{r}
+setDT(steps)
+steps_10m <- steps[
+  ,
+  .(
+    steps = sum(steps, na.rm = TRUE)
+  ),
+  by = .(
+    id,
+    date_10m = floor(date / 600) * 600
+  )
+]
+```
+
+```{r}
+labels_1455390 <- labels %>%
+  filter(id == 1455390) %>%
+  arrange(date)
+```
+
+
+```{r}
+# Filtrar datasets para el mismo participante
+hr_1455390 <- heart_rate_30s %>%
+  filter(id == 1455390, date_30 > 0) %>%
+  arrange(date_30)
+
+labels_1455390 <- labels %>%
+  filter(id == 1455390, date > 0) %>%
+  arrange(date)
+
+motion_1455390 <- motion_30s %>%
+  filter(id == 1455390, date_30 > 0) %>%
+  arrange(date_30)
+
+
+# Colores para cada etapa del sueño
+etapas <- sort(unique(labels_1455390$stage))
+
+colores <- setNames(
+  hcl.colors(length(etapas), palette = "Dark 3"),
+  etapas
+)
+
+
+# Rangos de las variables
+rango_hr <- range(hr_1455390$hr_promedio, na.rm = TRUE)
+rango_mov <- range(motion_1455390$movimiento_promedio, na.rm = TRUE)
+
+# Espacio para las etiquetas
+margen <- diff(rango_hr) * 0.15
+y_etiquetas <- rango_hr[1] - margen
+
+# Reservar espacio a la derecha para la leyenda
+par(mar = c(5, 4, 4, 10), xpd = NA)
+
+
+# Gráfico principal: frecuencia cardíaca
+plot(
+  hr_1455390$date_30,
+  hr_1455390$hr_promedio,
+  type = "l",
+  col = "black",
+  lwd = 1.2,
+  xlab = "Tiempo (segundos)",
+  ylab = "Frecuencia cardíaca (BPM)",
+  main = "Frecuencia cardíaca, movimiento y etapas del sueño",
+  ylim = c(y_etiquetas - margen, rango_hr[2] + margen)
+)
+
+
+# Transformar movimiento para representarlo en el gráfico
+y_mov_min <- rango_hr[1] + diff(rango_hr) * 0.25
+y_mov_max <- rango_hr[2] + margen
+
+escalar_mov <- function(x) {
+  y_mov_min +
+    (x - rango_mov[1]) /
+    diff(rango_mov) *
+    (y_mov_max - y_mov_min)
+}
+
+
+# Agregar movimiento en rojo
+lines(
+  motion_1455390$date_30,
+  escalar_mov(motion_1455390$movimiento_promedio),
+  col = "red",
+  lwd = 1.2
+)
+
+
+# Segundo eje: movimiento
+valores_mov <- pretty(rango_mov)
+
+axis(
+  side = 4,
+  at = escalar_mov(valores_mov),
+  labels = round(valores_mov, 2),
+  col.axis = "red"
+)
+
+mtext(
+  "Movimiento promedio (g)",
+  side = 4,
+  line = 3,
+  col = "red"
+)
+
+
+# Agregar etiquetas de sueño
+points(
+  labels_1455390$date,
+  rep(y_etiquetas, nrow(labels_1455390)),
+  col = colores[as.character(labels_1455390$stage)],
+  pch = 15,
+  cex = 0.7
+)
+
+
+# Leyenda a la derecha del gráfico
+legend(
+  "topright",
+  inset = c(-0.55, 0),
+  legend = c(
+    "Frecuencia cardíaca",
+    "Movimiento promedio",
+    paste("Stage", etapas)
+  ),
+  col = c("black", "red", colores),
+  lty = c(1, 1, rep(NA, length(etapas))),
+  pch = c(NA, NA, rep(15, length(etapas))),
+  lwd = c(1.2, 1.2, rep(NA, length(etapas))),
+  cex = 0.8,
+  bty = "n"
+)
+
+# Restaurar parámetros gráficos
+par(mar = c(5, 4, 4, 2) + 0.1, xpd = FALSE)
+```
+REFERENCIAS:
+-1: creo que es una etiqueta que indica que no hay registro del estado en ese instante
+
+0: DESPIERTO
+
+N1 – Transición
+La persona comienza a dormirse. Es una etapa breve y de sueño muy ligero.
+
+
+
+N2 – Sueño ligero estable
+Disminuyen la actividad corporal y la respuesta a estímulos externos.
+
+
+N3 – Sueño profundo
+Es la etapa de mayor profundidad del sueño y tiene un papel importante en la recuperación física.
+
+
+REM – Sueño paradójico (STAGE 5)
+Hay una intensa actividad cerebral, movimientos oculares rápidos y suele producirse gran parte de los sueños vívidos.
+
+
+Cosas que podriamos hacer:
+- mostrar todo el pre procesamiento de los datos con las decisiones que tomamos
+- ver correlaciones por ej: si hay correlacion entre la frec cardiaca y el estado del sueño, o si hay correlacion entre cambios bruscos de frecuencia cardiaca y cambios de estado (esto se me ocurrio viendo solo el caso de esta id, asique puede que al final nada que ver)
+- como los tiempos negativos son tiempo antes del estudio del sueño, ver si se puede predecir o hay correlacion entre el nivel de actividad previa al estudio y la "calidad" del sueño (nose como mediriamos la calidad, podria ser cantidad de veces que se despierta o tiempo en sueños mas profundos algo asi, o tiempo total de sueño)
+
+
